@@ -78,57 +78,88 @@ app.get("/users", async (req, res) => {
 
 app.get("/sisa-pertemuan", async (req, res) => {
   try {
+    const limit = parseInt(req.query.limit) || 10;
+    const sisaMax = req.query.sisa_max;
+    const nama = req.query.nama;
+
+    let where = `
+      s.status = 1
+      AND EXISTS (
+        SELECT 1
+        FROM model_has_roles mrs
+        WHERE mrs.model_id = s.id
+          AND mrs.role_id = 2
+      )
+    `;
+
+    if (sisaMax) {
+      where += ` AND (
+        SELECT COUNT(0)
+        FROM course_schedules cs2
+        JOIN courses c2 ON c2.id = cs2.course_id
+        WHERE c2.student_id = s.id
+          AND cs2.status <> 2
+          AND cs2.status < 5
+          AND cs2.deleted_at IS NULL
+      ) <= ${sisaMax}`;
+    }
+
+    if (nama) {
+      where += ` AND s.name LIKE '%${nama}%'`;
+    }
+
     const [rows] = await db.query(`
       SELECT 
-          s.name AS student_name,
-          s.phone AS student_phone,
-          cs1.started_at,
+        s.name AS student_name,
+        s.phone AS student_phone,
+        cs1.started_at,
+        (TO_DAYS(cs1.started_at) - TO_DAYS(NOW())) AS diff_days,
 
-          (TO_DAYS(cs1.started_at) - TO_DAYS(NOW())) AS diff_days,
-
-          (
-              SELECT COUNT(0)
-              FROM course_schedules cs2
-              JOIN courses c2 ON c2.id = cs2.course_id
-              WHERE c2.student_id = s.id
-                AND cs2.status <> 2
-                AND cs2.status < 5
-                AND cs2.deleted_at IS NULL
-          ) AS sisa_pertemuan
+        (
+          SELECT COUNT(0)
+          FROM course_schedules cs2
+          JOIN courses c2 ON c2.id = cs2.course_id
+          WHERE c2.student_id = s.id
+            AND cs2.status <> 2
+            AND cs2.status < 5
+            AND cs2.deleted_at IS NULL
+        ) AS sisa_pertemuan
 
       FROM users s
 
-      -- ambil last schedule
       LEFT JOIN (
-          SELECT cs.student_id, cs.started_at
-          FROM course_schedules cs
-          INNER JOIN (
-              SELECT student_id, MAX(updated_at) latest_update
-              FROM course_schedules
-              WHERE status = 2
-              GROUP BY student_id
-          ) x 
-          ON x.student_id = cs.student_id 
-          AND x.latest_update = cs.updated_at
+        SELECT cs.student_id, cs.started_at
+        FROM course_schedules cs
+        INNER JOIN (
+          SELECT student_id, MAX(updated_at) latest_update
+          FROM course_schedules
+          WHERE status = 2
+          GROUP BY student_id
+        ) x 
+        ON x.student_id = cs.student_id 
+        AND x.latest_update = cs.updated_at
       ) cs1 ON cs1.student_id = s.id
 
-      WHERE s.status = 1
-      AND EXISTS (
-          SELECT 1
-          FROM model_has_roles mrs
-          WHERE mrs.model_id = s.id
-            AND mrs.role_id = 2
-      )
+      WHERE ${where}
+      ORDER BY sisa_pertemuan ASC
+      LIMIT ${limit}
     `);
 
     res.json(rows);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({
-      message: "Gagal ambil data sisa pertemuan",
-      error: error.message,
-    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "server error" });
   }
+});
+
+app.get("/sisa-pertemuan/urgent", async (req, res) => {
+  const [rows] = await db.query(`
+    SELECT ...
+    ORDER BY sisa_pertemuan ASC
+    LIMIT 10
+  `);
+
+  res.json(rows);
 });
 
 // 🚀 Jalankan server
