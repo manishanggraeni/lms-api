@@ -1,10 +1,12 @@
 import express from "express";
 import dotenv from "dotenv";
 import mysql from "mysql2/promise";
+import cors from "cors";
 
 dotenv.config();
 
 const app = express();
+app.use(cors());
 app.use(express.json());
 
 // 🔌 Koneksi ke database
@@ -24,16 +26,53 @@ app.get("/", (req, res) => {
 // ✅ Endpoint ambil data users dari DB
 app.get("/users", async (req, res) => {
   try {
-    const [rows] = await db.query(
-      "SELECT id, name, phone FROM users LIMIT 20"
-    );
+    const [rows] = await db.query(`
+      SELECT 
+        u.name AS nama,
+        TIMESTAMPDIFF(YEAR, u.dob, CURDATE()) AS usia,
+
+        CASE 
+          WHEN u.gender = 0 THEN 'laki-laki'
+          WHEN u.gender = 1 THEN 'perempuan'
+          ELSE 'tidak diketahui'
+        END AS jenis_kelamin,
+
+        u.created_at AS tanggal_masuk_sistem,
+
+        (
+          SELECT c.started_at
+          FROM course_schedules c
+          WHERE c.student_id = u.id
+            AND c.deleted_at IS NULL
+            AND c.status = 2
+          ORDER BY c.id DESC
+          LIMIT 1
+        ) AS tanggal_terakhir_ngaji,
+
+        COALESCE(
+          u.phone,
+          (
+            SELECT p.phone
+            FROM users p
+            WHERE p.id = u.parent_id
+            LIMIT 1
+          )
+        ) AS no_telfon
+
+      FROM users u
+      JOIN model_has_roles mhr 
+        ON u.id = mhr.model_id
+
+      WHERE 
+        mhr.role_id = 2
+        AND u.status = 1
+        AND u.deleted_at IS NULL
+    `);
+
     res.json(rows);
   } catch (error) {
     console.error(error);
-    res.status(500).json({
-      message: "Gagal ambil data users",
-      error: error.message,
-    });
+    res.status(500).json({ error: "Terjadi kesalahan server" });
   }
 });
 
@@ -93,8 +132,6 @@ app.get("/sisa-pertemuan", async (req, res) => {
 });
 
 // 🚀 Jalankan server
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running di port ${PORT}`);
+app.listen(process.env.PORT, () => {
+  console.log(`Server running di port ${process.env.PORT}`);
 });
