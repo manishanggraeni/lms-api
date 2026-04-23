@@ -23,56 +23,111 @@ app.get("/", (req, res) => {
   res.send("API Jalan 🚀");
 });
 
-// ✅ Endpoint ambil data users dari DB
-app.get("/users", async (req, res) => {
+// =================================================
+// 1. MURID BARU PER BULAN + DETAIL
+// =================================================
+app.get("/stats/murid-baru", async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 100;
+
+    const [rows] = await db.query(`
+      SELECT 
+        DATE_FORMAT(t.created_at, '%Y-%m') AS bulan,
+        COUNT(DISTINCT u.id) AS jumlah,
+        GROUP_CONCAT(u.name SEPARATOR ', ') AS nama_murid
+      FROM transactions t
+      JOIN users u ON u.id = t.user_id
+      JOIN model_has_roles mhr ON mhr.model_id = u.id
+      WHERE 
+        t.transaction_type = 1
+        AND t.status = 1
+        AND t.student_retention = 'N'
+        AND mhr.role_id = 2
+      GROUP BY bulan
+      ORDER BY bulan DESC
+      LIMIT ?
+    `, [limit]);
+
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// =================================================
+// 2. DEMOGRAFI MURID AKTIF
+// =================================================
+app.get("/stats/demografi", async (req, res) => {
   try {
     const [rows] = await db.query(`
       SELECT 
-        u.name AS nama,
-        TIMESTAMPDIFF(YEAR, u.dob, CURDATE()) AS usia,
-
-        CASE 
-          WHEN u.gender = 0 THEN 'laki-laki'
-          WHEN u.gender = 1 THEN 'perempuan'
-          ELSE 'tidak diketahui'
-        END AS jenis_kelamin,
-
-        u.created_at AS tanggal_masuk_sistem,
-
-        (
-          SELECT c.started_at
-          FROM course_schedules c
-          WHERE c.student_id = u.id
-            AND c.deleted_at IS NULL
-            AND c.status = 2
-          ORDER BY c.id DESC
-          LIMIT 1
-        ) AS tanggal_terakhir_ngaji,
-
-        COALESCE(
-          u.phone,
-          (
-            SELECT p.phone
-            FROM users p
-            WHERE p.id = u.parent_id
-            LIMIT 1
-          )
-        ) AS no_telfon
-
+        SUM(CASE WHEN TIMESTAMPDIFF(YEAR, u.dob, CURDATE()) <= 16 THEN 1 ELSE 0 END) AS anak,
+        SUM(CASE WHEN TIMESTAMPDIFF(YEAR, u.dob, CURDATE()) >= 17 THEN 1 ELSE 0 END) AS dewasa,
+        SUM(CASE WHEN u.gender = 0 THEN 1 ELSE 0 END) AS laki_laki,
+        SUM(CASE WHEN u.gender = 1 THEN 1 ELSE 0 END) AS perempuan
       FROM users u
-      JOIN model_has_roles mhr 
-        ON u.id = mhr.model_id
-
+      JOIN model_has_roles mhr ON mhr.model_id = u.id
       WHERE 
         mhr.role_id = 2
         AND u.status = 1
         AND u.deleted_at IS NULL
     `);
 
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// =================================================
+// 3. STATUS HARIAN (LOST CONTACT & TIDAK AKTIF)
+// =================================================
+app.get("/stats/status-harian", async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+
+    const [rows] = await db.query(`
+      SELECT 
+        DATE(l.updated_at) AS tanggal,
+        SUM(CASE WHEN l.status = 4 THEN 1 ELSE 0 END) AS lost_contact,
+        SUM(CASE WHEN l.status = 2 THEN 1 ELSE 0 END) AS tidak_aktif,
+        GROUP_CONCAT(u.name SEPARATOR ', ') AS nama_murid
+      FROM user_change_status_log l
+      JOIN users u ON u.id = l.user_id
+      GROUP BY tanggal
+      ORDER BY tanggal DESC
+      LIMIT ?
+    `, [limit]);
+
     res.json(rows);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Terjadi kesalahan server" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// =================================================
+// 4. RETENSI MURID
+// =================================================
+app.get("/stats/retensi", async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT 
+        COUNT(DISTINCT t.user_id) AS jumlah_retensi,
+        GROUP_CONCAT(u.name SEPARATOR ', ') AS nama_murid
+      FROM transactions t
+      JOIN users u ON u.id = t.user_id
+      WHERE 
+        t.transaction_type = 1
+        AND t.status = 1
+        AND t.student_retention = 'R'
+    `);
+
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -152,15 +207,6 @@ app.get("/sisa-pertemuan", async (req, res) => {
   }
 });
 
-app.get("/sisa-pertemuan/urgent", async (req, res) => {
-  const [rows] = await db.query(`
-    SELECT ...
-    ORDER BY sisa_pertemuan ASC
-    LIMIT 10
-  `);
-
-  res.json(rows);
-});
 
 // 🚀 Jalankan server
 app.listen(process.env.PORT, () => {
