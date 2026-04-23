@@ -94,7 +94,7 @@ app.get("/stats/status-harian", async (req, res) => {
         SUM(CASE WHEN l.status = 4 THEN 1 ELSE 0 END) AS lost_contact,
         SUM(CASE WHEN l.status = 2 THEN 1 ELSE 0 END) AS tidak_aktif,
         GROUP_CONCAT(u.name SEPARATOR ', ') AS nama_murid
-      FROM user_change_status_log l
+      FROM user_change_status_logs l
       JOIN users u ON u.id = l.user_id
       GROUP BY tanggal
       ORDER BY tanggal DESC
@@ -108,59 +108,27 @@ app.get("/stats/status-harian", async (req, res) => {
 });
 
 
-// =================================================
-// 4. RETENSI MURID
-// =================================================
-app.get("/stats/retensi", async (req, res) => {
-  try {
-    const [rows] = await db.query(`
-      SELECT 
-        COUNT(DISTINCT t.user_id) AS jumlah_retensi,
-        GROUP_CONCAT(u.name SEPARATOR ', ') AS nama_murid
-      FROM transactions t
-      JOIN users u ON u.id = t.user_id
-      WHERE 
-        t.transaction_type = 1
-        AND t.status = 1
-        AND t.student_retention = 'R'
-    `);
-
-    res.json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 app.get("/sisa-pertemuan", async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 10;
-    const sisaMax = req.query.sisa_max;
-    const nama = req.query.nama;
+    const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+    const lama = req.query.lama;
+    const minHari = parseInt(req.query.min_hari);
+    const sisa = parseInt(req.query.sisa);
 
-    let where = `
-      s.status = 1
-      AND EXISTS (
-        SELECT 1
-        FROM model_has_roles mrs
-        WHERE mrs.model_id = s.id
-          AND mrs.role_id = 2
-      )
-    `;
+    let kondisiHari = "";
+    let kondisiSisa = "";
 
-    if (sisaMax) {
-      where += ` AND (
-        SELECT COUNT(0)
-        FROM course_schedules cs2
-        JOIN courses c2 ON c2.id = cs2.course_id
-        WHERE c2.student_id = s.id
-          AND cs2.status <> 2
-          AND cs2.status < 5
-          AND cs2.deleted_at IS NULL
-      ) <= ${sisaMax}`;
-    }
+    // ================= FILTER HARI =================
+    if (!isNaN(minHari)) {
+      kondisiHari = `>= ${minHari}`;
+    } else if (lama === "2minggu") kondisiHari = ">= 14";
+    else if (lama === "1bulan") kondisiHari = ">= 30";
+    else if (lama === "3bulan") kondisiHari = ">= 90";
+    else if (lama === "6bulan") kondisiHari = ">= 180";
 
-    if (nama) {
-      where += ` AND s.name LIKE '%${nama}%'`;
+    // ================= FILTER SISA =================
+    if (!isNaN(sisa)) {
+      kondisiSisa = `= ${sisa}`;
     }
 
     const [rows] = await db.query(`
@@ -168,7 +136,8 @@ app.get("/sisa-pertemuan", async (req, res) => {
         s.name AS student_name,
         s.phone AS student_phone,
         cs1.started_at,
-        (TO_DAYS(cs1.started_at) - TO_DAYS(NOW())) AS diff_days,
+
+        (TO_DAYS(NOW()) - TO_DAYS(cs1.started_at)) AS lama_tidak_mengaji,
 
         (
           SELECT COUNT(0)
@@ -195,10 +164,33 @@ app.get("/sisa-pertemuan", async (req, res) => {
         AND x.latest_update = cs.updated_at
       ) cs1 ON cs1.student_id = s.id
 
-      WHERE ${where}
-      ORDER BY sisa_pertemuan ASC
-      LIMIT ${limit}
-    `);
+      WHERE s.status = 1
+      AND EXISTS (
+        SELECT 1
+        FROM model_has_roles mrs
+        WHERE mrs.model_id = s.id
+          AND mrs.role_id = 2
+      )
+
+      ${kondisiHari ? `AND (TO_DAYS(NOW()) - TO_DAYS(cs1.started_at)) ${kondisiHari}` : ""}
+
+      ${
+        kondisiSisa
+          ? `AND (
+            SELECT COUNT(0)
+            FROM course_schedules cs2
+            JOIN courses c2 ON c2.id = cs2.course_id
+            WHERE c2.student_id = s.id
+              AND cs2.status <> 2
+              AND cs2.status < 5
+              AND cs2.deleted_at IS NULL
+          ) ${kondisiSisa}`
+          : ""
+      }
+
+      ORDER BY sisa_pertemuan ASC, lama_tidak_mengaji DESC
+      LIMIT ?
+    `, [limit]);
 
     res.json(rows);
   } catch (err) {
