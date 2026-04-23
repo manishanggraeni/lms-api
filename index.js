@@ -65,17 +65,19 @@ app.get("/stats/demografi", async (req, res) => {
         SUM(CASE WHEN TIMESTAMPDIFF(YEAR, u.dob, CURDATE()) <= 16 THEN 1 ELSE 0 END) AS anak,
         SUM(CASE WHEN TIMESTAMPDIFF(YEAR, u.dob, CURDATE()) >= 17 THEN 1 ELSE 0 END) AS dewasa,
         SUM(CASE WHEN u.gender = 0 THEN 1 ELSE 0 END) AS laki_laki,
-        SUM(CASE WHEN u.gender = 1 THEN 1 ELSE 0 END) AS perempuan
+        SUM(CASE WHEN u.gender = 1 THEN 1 ELSE 0 END) AS perempuan,
+        COUNT(*) AS total_murid_aktif
       FROM users u
-      JOIN model_has_roles mhr ON mhr.model_id = u.id
+      JOIN model_has_roles mhr 
+        ON mhr.model_id = u.id AND mhr.role_id = 2
       WHERE 
-        mhr.role_id = 2
-        AND u.status = 1
+        u.status = 1
         AND u.deleted_at IS NULL
     `);
 
     res.json(rows[0]);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
