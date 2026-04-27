@@ -109,7 +109,9 @@ app.get("/stats/status-harian", async (req, res) => {
   }
 });
 
-
+// =================================================
+// 4. SISA PERTEMUAN
+// =================================================
 app.get("/sisa-pertemuan", async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 20, 50);
@@ -198,6 +200,189 @@ app.get("/sisa-pertemuan", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "server error" });
+  }
+});
+
+app.get("/murid-by-nama-guru", async (req, res) => {
+  try {
+    const namaGuru = req.query.nama_guru || "";
+    const limit = parseInt(req.query.limit) || 20;
+    const page = parseInt(req.query.page) || 1;
+    const offset = (page - 1) * limit;
+
+    let where = `
+      t.status = 1
+      AND t.deleted_at IS NULL
+      AND mhr.role_id = 3
+    `;
+
+    const params = [];
+
+    if (namaGuru) {
+      where += ` AND t.name LIKE ?`;
+      params.push(`%${namaGuru}%`);
+    }
+
+    const [rows] = await db.query(`
+      SELECT DISTINCT
+        t.id AS teacher_id,
+        t.name AS teacher_name,
+        s.id AS student_id,
+        s.name AS student_name,
+        s.email,
+        s.phone
+      FROM users t
+
+      JOIN model_has_roles mhr 
+        ON mhr.model_id = t.id
+
+      JOIN courses c
+        ON c.teacher_id = t.id
+        AND c.status IN (4,5)
+        AND c.deleted_at IS NULL
+
+      JOIN users s
+        ON s.id = c.student_id
+        AND s.status = 1
+        AND s.deleted_at IS NULL
+
+      WHERE ${where}
+
+      ORDER BY t.name, s.name
+      LIMIT ? OFFSET ?
+    `, [...params, limit, offset]);
+
+    res.json({
+      success: true,
+      meta: {
+        page,
+        limit
+      },
+      data: rows
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      message: "Internal Server Error"
+    });
+  }
+});
+
+app.get("/murid-operasional", async (req, res) => {
+  try {
+    const namaGuru = req.query.nama_guru || "";
+    const limit = parseInt(req.query.limit) || 10;
+    const page = parseInt(req.query.page) || 1;
+    const offset = (page - 1) * limit;
+
+    let where = `
+      t.status = 1
+      AND t.deleted_at IS NULL
+      AND mhr.role_id = 3
+    `;
+
+    const params = [];
+
+    if (namaGuru) {
+      where += ` AND t.name LIKE ?`;
+      params.push(`%${namaGuru}%`);
+    }
+
+    const [rows] = await db.query(`
+      SELECT DISTINCT
+        t.id AS teacher_id,
+        t.name AS teacher_name,
+
+        s.id AS student_id,
+        s.name AS student_name,
+        s.email,
+        s.phone,
+
+        COALESCE(agg.sisa_pertemuan, 0) AS sisa_pertemuan,
+
+        CASE 
+          WHEN agg.last_started_at IS NULL THEN NULL
+          ELSE DATEDIFF(NOW(), agg.last_started_at)
+        END AS lama_tidak_mengaji,
+
+        CASE 
+          WHEN agg.last_started_at IS NULL THEN 'belum_pernah'
+          WHEN DATEDIFF(NOW(), agg.last_started_at) <= 7 THEN 'aktif'
+          ELSE 'churn'
+        END AS status
+
+      FROM users t
+
+      JOIN model_has_roles mhr 
+        ON mhr.model_id = t.id AND mhr.role_id = 3
+
+      JOIN courses c
+        ON c.teacher_id = t.id
+        AND c.status IN (4,5)
+        AND c.deleted_at IS NULL
+
+      -- 🔥 FILTER MURID DI SINI (WAJIB)
+      JOIN users s
+        ON s.id = c.student_id
+        AND s.status = 1
+        AND s.deleted_at IS NULL
+
+      -- 🔥 AGGREGATE HANYA UNTUK MURID VALID
+      LEFT JOIN (
+        SELECT 
+          c.student_id,
+
+          SUM(
+            CASE 
+              WHEN cs.status <> 2 
+               AND cs.status < 5 
+               AND cs.deleted_at IS NULL 
+              THEN 1 ELSE 0 
+            END
+          ) AS sisa_pertemuan,
+
+          MAX(
+            CASE 
+              WHEN cs.status = 2 THEN cs.started_at
+              ELSE NULL
+            END
+          ) AS last_started_at
+
+        FROM courses c
+        JOIN users s 
+          ON s.id = c.student_id
+          AND s.status = 1
+          AND s.deleted_at IS NULL
+
+        LEFT JOIN course_schedules cs 
+          ON cs.course_id = c.id
+
+        GROUP BY c.student_id
+      ) agg ON agg.student_id = s.id
+
+      WHERE ${where}
+
+      ORDER BY 
+        status DESC,
+        lama_tidak_mengaji DESC
+
+      LIMIT ? OFFSET ?
+    `, [...params, limit, offset]);
+
+    res.json({
+      success: true,
+      meta: { page, limit },
+      data: rows
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      message: "Internal Server Error"
+    });
   }
 });
 
