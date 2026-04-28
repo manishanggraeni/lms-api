@@ -395,20 +395,33 @@ app.get("/murid-operasional", async (req, res) => {
 // =================================================
 // 7. SALDO GURU (TOTAL PER TEMUAN, TOTAL FEE, TOTAL PENCAIRAN, SALDO BELUM DICAIRKAN)
 // =================================================
-app.get("/stats/saldo-guru", async (req, res) => {
+app.get("/stats/saldo-guru-transaksi", async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 10;
     const nama = req.query.nama;
     const minSaldo = parseInt(req.query.min_saldo) || 0;
     const sort = req.query.sort === "asc" ? "ASC" : "DESC";
 
-    let where = `
+    // Optional filter tanggal
+    const startDate = req.query.start_date; // format: YYYY-MM-DD
+    const endDate = req.query.end_date;
+
+    let whereUser = `
       u.status = 1
       AND u.deleted_at IS NULL
     `;
 
     if (nama) {
-      where += ` AND u.name LIKE '%${nama}%'`;
+      whereUser += ` AND u.name LIKE '%${nama}%'`;
+    }
+
+    // filter tanggal di subquery transaksi
+    let whereTrx = `t.status = 1`;
+    if (startDate) {
+      whereTrx += ` AND t.created_at >= '${startDate} 00:00:00'`;
+    }
+    if (endDate) {
+      whereTrx += ` AND t.created_at <= '${endDate} 23:59:59'`;
     }
 
     const [rows] = await db.query(`
@@ -416,100 +429,69 @@ app.get("/stats/saldo-guru", async (req, res) => {
         u.id AS teacher_id,
         u.name AS teacher_name,
 
-        COUNT(DISTINCT cs.id) AS total_pertemuan,
-
-        SUM(COALESCE(p.profit_sharing, 0)) AS total_fee,
-
-        COALESCE(MAX(trx.pengeluaran), 0) AS total_pencairan,
+        COALESCE(MAX(trx.pendapatan), 0) AS pendapatan,
+        COALESCE(MAX(trx.pengeluaran), 0) AS pengeluaran,
 
         (
-          SUM(COALESCE(p.profit_sharing, 0)) 
+          COALESCE(MAX(trx.pendapatan), 0) 
           - COALESCE(MAX(trx.pengeluaran), 0)
-        ) AS saldo_belum_dicairkan
+        ) AS saldo
 
       FROM users u
 
       JOIN model_has_roles mhr 
         ON mhr.model_id = u.id AND mhr.role_id = 3
 
-      JOIN course_schedules cs 
-        ON cs.teacher_id = u.id
-        AND cs.status IN (1,2)
-        AND cs.deleted_at IS NULL
-
-      JOIN courses c 
-        ON c.id = cs.course_id
-
-      LEFT JOIN packages p 
-        ON p.id = c.package_id
-
       LEFT JOIN (
         SELECT 
-          user_id,
-          SUM(amount) AS pengeluaran
-        FROM transactions
-        WHERE transaction_type = 19
-          AND status = 1
-        GROUP BY user_id
+          t.user_id,
+          SUM(CASE WHEN t.transaction_type = 11 THEN t.amount ELSE 0 END) AS pendapatan,
+          SUM(CASE WHEN t.transaction_type = 19 THEN t.amount ELSE 0 END) AS pengeluaran
+        FROM transactions t
+        WHERE ${whereTrx}
+        GROUP BY t.user_id
       ) trx ON trx.user_id = u.id
 
-      WHERE ${where}
+      WHERE ${whereUser}
 
       GROUP BY u.id, u.name
 
-      HAVING saldo_belum_dicairkan >= ${minSaldo}
+      HAVING saldo >= ${minSaldo}
 
-      ORDER BY saldo_belum_dicairkan ${sort}
+      ORDER BY saldo ${sort}
 
       LIMIT ${limit}
     `);
 
-    // 🔥 TOTAL GLOBAL
+    // 🔥 Total semua guru (pakai filter tanggal yang sama)
     const [total] = await db.query(`
       SELECT 
-        SUM(saldo) AS total_saldo_semua_guru
+        SUM(pendapatan) AS total_pendapatan,
+        SUM(pengeluaran) AS total_pengeluaran,
+        SUM(pendapatan - pengeluaran) AS total_saldo
       FROM (
         SELECT 
-          u.id,
-          (
-            SUM(COALESCE(p.profit_sharing, 0)) 
-            - COALESCE(MAX(trx.pengeluaran), 0)
-          ) AS saldo
-
-        FROM users u
-
-        JOIN model_has_roles mhr 
-          ON mhr.model_id = u.id AND mhr.role_id = 3
-
-        JOIN course_schedules cs 
-          ON cs.teacher_id = u.id
-          AND cs.status IN (1,2)
-          AND cs.deleted_at IS NULL
-
-        JOIN courses c 
-          ON c.id = cs.course_id
-
-        LEFT JOIN packages p 
-          ON p.id = c.package_id
-
-        LEFT JOIN (
-          SELECT 
-            user_id,
-            SUM(amount) AS pengeluaran
-          FROM transactions
-          WHERE transaction_type = 19
-            AND status = 1
-          GROUP BY user_id
-        ) trx ON trx.user_id = u.id
-
-        WHERE ${where}
-
-        GROUP BY u.id
+          t.user_id,
+          SUM(CASE WHEN t.transaction_type = 11 THEN t.amount ELSE 0 END) AS pendapatan,
+          SUM(CASE WHEN t.transaction_type = 19 THEN t.amount ELSE 0 END) AS pengeluaran
+        FROM transactions t
+        WHERE ${whereTrx}
+        GROUP BY t.user_id
       ) x
     `);
 
     res.json({
-      total_saldo: total[0].total_saldo_semua_guru || 0,
+      filters: {
+        nama,
+        min_saldo: minSaldo,
+        start_date: startDate || null,
+        end_date: endDate || null
+      },
+      total: {
+        pendapatan: total[0].total_pendapatan || 0,
+        pengeluaran: total[0].total_pengeluaran || 0,
+        saldo: total[0].total_saldo || 0
+      },
       data: rows
     });
 
