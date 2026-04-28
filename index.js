@@ -203,6 +203,9 @@ app.get("/sisa-pertemuan", async (req, res) => {
   }
 });
 
+// =================================================
+// 5. NAMA MURID TIAP GURU + DETAIL 
+// =================================================
 app.get("/murid-by-nama-guru", async (req, res) => {
   try {
     const namaGuru = req.query.nama_guru || "";
@@ -270,6 +273,9 @@ app.get("/murid-by-nama-guru", async (req, res) => {
   }
 });
 
+// =================================================
+// 6. DETAIL MURID LAMA TIDAK MENGAJI + SISA PERTEMUAN
+// =================================================
 app.get("/murid-operasional", async (req, res) => {
   try {
     const namaGuru = req.query.nama_guru || "";
@@ -386,6 +392,132 @@ app.get("/murid-operasional", async (req, res) => {
   }
 });
 
+// =================================================
+// 7. SALDO GURU (TOTAL PER TEMUAN, TOTAL FEE, TOTAL PENCAIRAN, SALDO BELUM DICAIRKAN)
+// =================================================
+app.get("/stats/saldo-guru", async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    const nama = req.query.nama;
+    const minSaldo = parseInt(req.query.min_saldo) || 0;
+    const sort = req.query.sort === "asc" ? "ASC" : "DESC";
+
+    let where = `
+      u.status = 1
+      AND u.deleted_at IS NULL
+    `;
+
+    if (nama) {
+      where += ` AND u.name LIKE '%${nama}%'`;
+    }
+
+    const [rows] = await db.query(`
+      SELECT 
+        u.id AS teacher_id,
+        u.name AS teacher_name,
+
+        COUNT(DISTINCT cs.id) AS total_pertemuan,
+
+        SUM(COALESCE(p.profit_sharing, 0)) AS total_fee,
+
+        COALESCE(MAX(trx.pengeluaran), 0) AS total_pencairan,
+
+        (
+          SUM(COALESCE(p.profit_sharing, 0)) 
+          - COALESCE(MAX(trx.pengeluaran), 0)
+        ) AS saldo_belum_dicairkan
+
+      FROM users u
+
+      JOIN model_has_roles mhr 
+        ON mhr.model_id = u.id AND mhr.role_id = 3
+
+      JOIN course_schedules cs 
+        ON cs.teacher_id = u.id
+        AND cs.status IN (1,2)
+        AND cs.deleted_at IS NULL
+
+      JOIN courses c 
+        ON c.id = cs.course_id
+
+      LEFT JOIN packages p 
+        ON p.id = c.package_id
+
+      LEFT JOIN (
+        SELECT 
+          user_id,
+          SUM(amount) AS pengeluaran
+        FROM transactions
+        WHERE transaction_type = 19
+          AND status = 1
+        GROUP BY user_id
+      ) trx ON trx.user_id = u.id
+
+      WHERE ${where}
+
+      GROUP BY u.id, u.name
+
+      HAVING saldo_belum_dicairkan >= ${minSaldo}
+
+      ORDER BY saldo_belum_dicairkan ${sort}
+
+      LIMIT ${limit}
+    `);
+
+    // 🔥 TOTAL GLOBAL
+    const [total] = await db.query(`
+      SELECT 
+        SUM(saldo) AS total_saldo_semua_guru
+      FROM (
+        SELECT 
+          u.id,
+          (
+            SUM(COALESCE(p.profit_sharing, 0)) 
+            - COALESCE(MAX(trx.pengeluaran), 0)
+          ) AS saldo
+
+        FROM users u
+
+        JOIN model_has_roles mhr 
+          ON mhr.model_id = u.id AND mhr.role_id = 3
+
+        JOIN course_schedules cs 
+          ON cs.teacher_id = u.id
+          AND cs.status IN (1,2)
+          AND cs.deleted_at IS NULL
+
+        JOIN courses c 
+          ON c.id = cs.course_id
+
+        LEFT JOIN packages p 
+          ON p.id = c.package_id
+
+        LEFT JOIN (
+          SELECT 
+            user_id,
+            SUM(amount) AS pengeluaran
+          FROM transactions
+          WHERE transaction_type = 19
+            AND status = 1
+          GROUP BY user_id
+        ) trx ON trx.user_id = u.id
+
+        WHERE ${where}
+
+        GROUP BY u.id
+      ) x
+    `);
+
+    res.json({
+      total_saldo: total[0].total_saldo_semua_guru || 0,
+      data: rows
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // 🚀 Jalankan server
 app.listen(process.env.PORT, () => {
